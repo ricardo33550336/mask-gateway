@@ -21,17 +21,19 @@
 | 存储 | 单个 JSON 文件（默认 `rules.json`），无数据库 |
 | 正则 | `github.com/dlclark/regexp2/v2`（**唯一第三方依赖**，支持 lookahead/lookbehind）；检测器用标准库 `regexp` |
 | 前端 | 原生 JS + CSS，零构建，`//go:embed static` 打包进二进制 |
+| 仓库 | `github.com/ricardo33550336/mask-gateway`（默认分支 `main`） |
+| 许可 | MIT（见 `LICENSE`） |
 
 ## 模块布局
 
 | 文件 | 职责 |
 |---|---|
-| `main.go` | 入口、`route` 分发（管理页 / 管理 API / 转发）、转发逻辑 `forward`、`protectBody`、`developer→system` 归一化、HTTP 辅助函数 |
+| `main.go` | 入口、`route` 分发（管理页 / 管理 API / 转发）、转发逻辑 `forward`、`protectBody`、`developer→system` 归一化、静态资源 `noCache`、HTTP 辅助函数 |
 | `protect.go` | 规则模型 `Rule`/`Action`、JSON 全量扫描（`protectDocument` / `walker`）、正则编译缓存、`protectString` / `applyRuleToString`、校验 `validateRule` |
 | `detect.go` | 内置检测器库（`detectorRegistry`）、校验位（GB 11643 / Luhn）、熵检测、`span` 合并与替换 |
 | `response.go` | 响应侧守卫：有界窥探 `peekUpstream`、B1 回显检测 `leakMatcher`、B2 告警扫描 `warnScanner`、F 模型比对、E 事件环形缓冲 `auditLog` |
 | `store.go` | `Store`：规则 CRUD + JSON 文件持久化（原子写：临时文件 + rename） |
-| `static/` | 管理界面（`index.html` + `app.js` + `style.css`，原生 JS，调用 `/api/...`） |
+| `static/` | 管理界面（`index.html` + `app.js` + `style.css`，原生 JS，调用 `/api/...`）；改动后必须**重新 `go build`** 才生效（`embed` 编进二进制） |
 | `main_test.go` / `response_test.go` | 全部测试（无外部依赖，`go test` 直接跑） |
 | `rules.json` | 规则存储文件（被 `.gitignore` 忽略，启动时自动创建） |
 
@@ -153,6 +155,15 @@ UPSTREAM=https://api.openai.com ./mask-gateway -addr :8080   # 启动
 AUDIT=1 ./mask-gateway -upstream ... -audit                  # 开启诊断事件环形缓冲
 ```
 
+提交与发布（默认分支 `main`，仓库 `github.com/ricardo33550336/mask-gateway`）：
+
+```bash
+git add -A && git commit -m "feat: ..." && git push   # 只推代码；二进制与 rules.json 已被忽略
+gh release create v0.x.0 --generate-notes             # 打 tag 并生成 release notes
+```
+
+提交前跑一遍 `gofmt -l . && go vet ./... && go test ./...`（目前没有 CI，靠本地把关）。
+
 启动参数（除原有 `-addr` / `-rules` / `-upstream` / `-developer-as-system`）：
 
 | 参数 | 默认 | 说明 |
@@ -210,6 +221,15 @@ AUDIT=1 ./mask-gateway -upstream ... -audit                  # 开启诊断事�
 14. **新增测试**：用 `testStore(t, rules)` 辅助函数构造 store 并赋值给全局 `store`；涉及 `normalizeDeveloperToSystem` 的测试用 `defer` 恢复。
     响应侧测试用 `setupGuard()` + `startGateway()`（起两个 httptest server，自动恢复全局 `guardEnabled` / `peekBytes` / `upstreamBase` / `client` / audit）。
     测试辅助：`detectorRule()` 造检测器规则、`matchDetector()` 只跑检测、`messageContent()` 取消息正文。
+    直接调用 `route` + `httptest.NewRecorder()` 即可测静态资源（见 `TestStaticAssetsNoCache`）。
+15. **静态资源必须 `Cache-Control: no-cache`**：`embed.FS` 里的文件 modtime 为零，`http.FileServer`
+    不会发 `Last-Modified` / `ETag`，浏览器只能启发式缓存 —— 换了二进制却继续跑旧 `app.js`。
+    `/`（`serveUI`）和 `/static/` 两条分支都要经过 `noCache(w)`，`TestStaticAssetsNoCache` 锁定。
+16. **`static/` 改动必须重新编译**：`//go:embed static` 在构建期快照，改 JS/CSS 不重启进程 = 页面没变。
+    排查"前端改了却没生效"时，先 `curl -s localhost:PORT/static/app.js | head` 确认服务端字节数。
+17. **前端异步数据不要抢跑**：`detectors` 来自 `GET /api/detectors`，`fillDetectorOptions()` 必须在
+    `load()` 拿到数据之后调用（启动时 `detectors` 还是 `[]`，只调一次下拉框就永远是空的）。
+    新增依赖接口数据的表单控件照此办理；`TestAppJSRefillsDetectorOptions` 锁定调用次数与顺序。
 
 ## 测试与代码索引
 
@@ -224,11 +244,12 @@ AUDIT=1 ./mask-gateway -upstream ... -audit                  # 开启诊断事�
 完整数据、复现命令与容量规划公式见 [`docs/PERF-BASELINE.md`](docs/PERF-BASELINE.md)（不是本节）。
 改热路径（`response.go` / `forward`）后按那份文档的「回归对比清单」跑一遍。
 
-## 参考## 参考
+## 参考
 
 - 日常运维手册（启动/加规则/看事件/故障速查）：`USAGE.md`。
 - 已知边界（**改代码前先读**，其中几条是有意为之且有测试锁定）：`docs/KNOWN-LIMITS.md`。
 - 未实现项与"为什么没做"：`docs/BACKLOG.md`。
 - 性能基线与容量规划：`docs/PERF-BASELINE.md`。
 - 设计动机、FAQ 详见根目录 `README.md`（中文）。
+- 许可与提交规范：`LICENSE`（MIT）；仓库 https://github.com/ricardo33550336/mask-gateway （`main`）。
 - 脱敏逻辑移植自 AxonHub：`protect.go` 注释中标注了对应原函数名（`ApplyPromptProtectionRules`、`ValidateSettings`、`promptProtectionRuleAppliesToRole` 等）。

@@ -27,6 +27,10 @@
 ## 快速开始
 
 ```bash
+# 0. 取源码（也可以直接 `go install github.com/ricardo33550336/mask-gateway@latest`）
+git clone https://github.com/ricardo33550336/mask-gateway.git
+cd mask-gateway
+
 # 1. 编译（产物是单个二进制，含前端页面）
 go build -o mask-gateway .
 

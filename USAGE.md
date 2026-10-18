@@ -9,7 +9,7 @@
 
 ```bash
 cd mask-gateway
-go build -o mask-gateway .          # 单二进制，含前端
+go build -o mask-gateway .          # 单二进制，含前端（改了 static/ 也必须重新编译）
 ```
 
 > 二进制、`rules.json`、`rules.json.tmp` 都在 `.gitignore` 里，不会误提交。

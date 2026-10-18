@@ -1,0 +1,190 @@
+/* 脱敏网关 - 简洁管理界面（无任何外部依赖） */
+:root {
+  --bg: #0f1420;
+  --panel: #171e2e;
+  --panel-2: #1d2538;
+  --border: #2a3350;
+  --text: #e6e9f2;
+  --muted: #8b93a9;
+  --accent: #4f8cff;
+  --green: #34c07a;
+  --red: #ef5b6b;
+  --amber: #e8a13c;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #131a2b, var(--bg));
+}
+.topbar h1 { margin: 0; font-size: 20px; }
+.topbar .sub { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.topbar b { color: var(--text); }
+
+main { max-width: 1080px; margin: 0 auto; padding: 24px 28px 60px; }
+
+.toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.hint { color: var(--green); font-size: 13px; }
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 7px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background .15s, border-color .15s;
+}
+.btn:hover { background: #24304a; border-color: #3a4a74; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: #3d7bf0; }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn.danger { color: var(--red); }
+.btn.danger:hover { border-color: var(--red); background: #2a1a22; }
+
+.table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 10px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  font-size: 13px;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: rgba(79, 140, 255, .05); }
+
+.desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+code, .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: #0d1220;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  word-break: break-all;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.mask { background: rgba(52, 192, 122, .15); color: var(--green); }
+.badge.reject { background: rgba(239, 91, 107, .15); color: var(--red); }
+.badge.detector { background: rgba(79, 140, 255, .15); color: var(--accent, #4f8cff); }
+.muted { color: var(--muted); }
+.field-hint { color: var(--muted); font-size: 12px; margin: -4px 0 10px; }
+
+.switch { position: relative; display: inline-block; width: 36px; height: 20px; vertical-align: middle; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span {
+  position: absolute; inset: 0;
+  background: #33405f; border-radius: 999px;
+  transition: background .15s; cursor: pointer;
+}
+.switch span::before {
+  content: ""; position: absolute; width: 14px; height: 14px;
+  left: 3px; top: 3px; background: #fff; border-radius: 50%;
+  transition: transform .15s;
+}
+.switch input:checked + span { background: var(--green); }
+.switch input:checked + span::before { transform: translateX(16px); }
+
+.row-actions { white-space: nowrap; }
+
+.empty { color: var(--muted); text-align: center; padding: 32px 16px; }
+.hidden { display: none !important; }
+
+/* 弹窗 */
+.modal {
+  position: fixed; inset: 0;
+  background: rgba(5, 8, 15, .7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 50;
+  padding: 20px;
+}
+.modal-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: 560px; max-width: 100%;
+  max-height: 90vh; overflow: auto;
+  padding: 22px 26px;
+}
+.modal-box h2 { margin: 0 0 16px; font-size: 17px; }
+
+#rule-form label, .modal-box > label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+#rule-form input[type="text"], #rule-form input:not([type]), #rule-form select,
+.modal-box input, .modal-box select, .modal-box textarea {
+  display: block; width: 100%;
+  margin-top: 5px;
+  background: #0d1220;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.modal-box textarea { resize: vertical; }
+#rule-form input:focus, .modal-box input:focus, .modal-box select:focus, .modal-box textarea:focus {
+  outline: none; border-color: var(--accent);
+}
+.row { display: flex; gap: 12px; }
+.row > label { flex: 1; }
+
+fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 0 0 14px; }
+legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 12px; }
+.chips label { display: flex; align-items: center; gap: 5px; color: var(--text); font-size: 13px; margin: 0; cursor: pointer; }
+.chips input { accent-color: var(--accent); }
+
+.form-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.spacer { flex: 1; }
+
+.result { margin-top: 12px; }
+.result-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.result-label.ok { color: var(--green); }
+.result-label.no { color: var(--muted); }
+.result-label.rejected { color: var(--red); }
+.result pre {
+  background: #0d1220; border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+  font-size: 12px; white-space: pre-wrap; word-break: break-all;
+  margin: 0; max-height: 200px; overflow: auto;
+}
+
+/* 诊断事件 */
+.audit { margin-top: 18px; }
+.audit summary { cursor: pointer; font-size: 13px; color: var(--text); padding: 6px 0; }
+.audit-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.audit-list li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.7; }
+.audit-list li:last-child { border-bottom: none; }
+.token-input { background: #0d1220; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 5px 8px; font-size: 12px; width: 220px; }

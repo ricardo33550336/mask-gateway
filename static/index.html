@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>脱敏网关 · 规则管理</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div>
+    <h1>🛡️ 脱敏转发网关</h1>
+    <p class="sub">OpenAI 兼容转发 + 提示保护：转发前对请求做 <b>mask</b>（脱敏替换）或 <b>reject</b>（拒绝请求）。规则可以是正则，也可以是内置检测器（身份证/银行卡/API Key/JWT/高熵密钥…）。</p>
+  </div>
+</header>
+
+<main>
+  <div class="toolbar">
+    <button id="btn-create" class="btn primary">+ 新建规则</button>
+    <span id="hint" class="hint"></span>
+  </div>
+
+  <div class="table-wrap">
+    <table id="rules-table">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>匹配</th>
+          <th>操作</th>
+          <th>替换文本</th>
+          <th>位置</th>
+          <th>作用域</th>
+          <th>启用</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <p id="empty" class="empty hidden">还没有规则，点击「新建规则」开始。规则按 ID 顺序处理：多个 mask 依次叠加，第一个 reject 立即拦截请求。</p>
+  </div>
+
+  <details class="audit">
+    <summary>诊断事件 <span class="muted">— 响应侧守卫命中记录（需启动时加 <code>-audit</code>）</span></summary>
+    <div class="toolbar">
+      <button id="btn-events" class="btn small">刷新</button>
+      <button id="btn-events-clear" class="btn small danger">清空</button>
+      <input id="audit-token" type="password" placeholder="ADMIN_TOKEN（-admin-token）" autocomplete="off" class="token-input">
+      <button id="btn-token" class="btn small">保存 token</button>
+      <span id="audit-status" class="muted"></span>
+    </div>
+    <ul id="audit-list" class="audit-list"></ul>
+  </details>
+</main>
+
+<!-- 新建 / 编辑 -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <h2 id="modal-title">新建规则</h2>
+    <form id="rule-form">
+      <input type="hidden" id="f-id">
+      <label>名称 *<input id="f-name" required placeholder="如 mask-api-keys" autocomplete="off"></label>
+      <label>描述<input id="f-desc" placeholder="可选，说明规则用途" autocomplete="off"></label>
+
+      <div class="row">
+        <label>匹配方式 *
+          <select id="f-type">
+            <option value="regex">正则（自己写 pattern）</option>
+            <option value="detector">内置检测器（带校验，推荐）</option>
+          </select>
+        </label>
+        <label id="detector-wrap" class="hidden">检测器 *
+          <select id="f-detector"></select>
+        </label>
+      </div>
+      <p id="detector-desc" class="field-hint hidden"></p>
+
+      <label id="pattern-wrap">正则模式 *
+        <input id="f-pattern" placeholder='如 sk-[a-zA-Z0-9]{48}' autocomplete="off" spellcheck="false">
+      </label>
+
+      <div class="row hidden" id="entropy-wrap">
+        <label>熵阈值（默认 4.0）
+          <input id="f-threshold" type="number" step="0.1" min="1" max="8" placeholder="4.0">
+        </label>
+        <label>最小长度（默认 20）
+          <input id="f-minlength" type="number" min="4" max="1024" placeholder="20">
+        </label>
+      </div>
+
+      <div class="row">
+        <label>操作 *
+          <select id="f-action">
+            <option value="mask">mask（脱敏替换）</option>
+            <option value="reject">reject（拒绝请求）</option>
+          </select>
+        </label>
+        <label id="replacement-wrap">替换文本 *
+          <input id="f-replacement" placeholder="如 [REDACTED]" autocomplete="off">
+        </label>
+      </div>
+
+      <fieldset>
+        <legend>扫描位置（不勾选 = 全部）</legend>
+        <div id="fields" class="chips">
+          <label><input type="checkbox" value="content"> content（消息正文）</label>
+          <label><input type="checkbox" value="tool_calls"> tool_calls / reasoning</label>
+          <label><input type="checkbox" value="tools"> tools（函数描述与参数）</label>
+          <label><input type="checkbox" value="top"> top（input / prompt / metadata 等）</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>作用域（仅对消息位置生效，不勾选 = 所有角色）</legend>
+        <div id="scopes" class="chips">
+          <label><input type="checkbox" value="system"> system</label>
+          <label><input type="checkbox" value="developer"> developer</label>
+          <label><input type="checkbox" value="user"> user</label>
+          <label><input type="checkbox" value="assistant"> assistant</label>
+          <label><input type="checkbox" value="tool"> tool</label>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="button" id="btn-test" class="btn">测试</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-cancel" class="btn">取消</button>
+        <button type="submit" class="btn primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- 测试 -->
+<div id="test-modal" class="modal hidden">
+  <div class="modal-box">
+    <h2>测试匹配</h2>
+    <label>匹配方式<code id="t-pattern" class="mono"></code></label>
+    <label>操作 <span id="t-action" class="badge"></span> 替换文本 <code id="t-replacement" class="mono"></code></label>
+    <label>测试文本
+      <textarea id="t-text" rows="5" placeholder="输入要测试的内容…" spellcheck="false"></textarea>
+    </label>
+    <div id="t-result" class="result hidden">
+      <div id="t-result-label" class="result-label"></div>
+      <pre id="t-result-body"></pre>
+    </div>
+    <div class="form-actions">
+      <span class="spacer"></span>
+      <button type="button" id="t-close" class="btn">关闭</button>
+      <button type="button" id="t-run" class="btn primary">运行</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

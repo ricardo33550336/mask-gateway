@@ -621,3 +621,110 @@ func BenchmarkForwardGuardOnHoldback(b *testing.B) {
 }
 
 var _ = os.Stderr
+
+// ---------------------------------------------------------------------------
+// 来源白名单（-allow-cidr）：默认只允许回环
+//
+// 目的不是替代鉴权，而是把"能连上端口"这件事本身收窄：WSL 连 Windows 侧网关
+// 必须放开端口，但放开的是"这一网段"，不是"整个局域网"。
+// ---------------------------------------------------------------------------
+
+func TestRemoteAllowedDefaultsToLoopback(t *testing.T) {
+	prev := allowNets
+	allowNets = defaultAllowNets()
+	defer func() { allowNets = prev }()
+
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:5555", true},
+		{"[::1]:5555", true},
+		{"[::ffff:127.0.0.1]:5555", true}, // Go 在某些平台把 IPv4 报成 4-in-6
+		{"192.168.1.9:5555", false},
+		{"[fe80::1]:5555", false},
+		{"10.0.0.1:5555", false},
+		{"", false},        // 解析不出来 → 拒绝，不能当成放行
+		{"garbage", false}, // 同上
+		{"127.0.0.1", true},
+	}
+	for _, c := range cases {
+		if got := remoteAllowed(c.addr); got != c.want {
+			t.Errorf("remoteAllowed(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}
+
+func TestParseAllowNets(t *testing.T) {
+	if got, err := parseAllowNets(nil); err != nil || len(got) != 2 {
+		t.Fatalf("empty spec must fall back to loopback, got %v err=%v", got, err)
+	}
+	if got, err := parseAllowNets([]string{"  "}); err != nil || len(got) != 2 {
+		t.Fatalf("blank spec must fall back to loopback, got %v err=%v", got, err)
+	}
+	// 逗号分隔 + 单主机不带掩码
+	got, err := parseAllowNets([]string{"172.28.0.0/16, 10.1.2.3"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 2 || got[0].String() != "172.28.0.0/16" || got[1].String() != "10.1.2.3/32" {
+		t.Fatalf("unexpected nets: %v", got)
+	}
+	// 写错必须报错（启动 fail closed，不静默降级成"全放行"）
+	if _, err := parseAllowNets([]string{"172.28.0.0/33"}); err == nil {
+		t.Fatal("invalid CIDR must be rejected")
+	}
+	if _, err := parseAllowNets([]string{"not-an-ip"}); err == nil {
+		t.Fatal("invalid IP must be rejected")
+	}
+}
+
+func TestRestrictRemoteBlocksAndFailsClosed(t *testing.T) {
+	prev := allowNets
+	allowNets = defaultAllowNets()
+	defer func() { allowNets = prev }()
+
+	h := restrictRemote(http.HandlerFunc(route))
+
+	// 局域网来源：直接 403，且不暴露"这个端口上有什么"
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "203.0.113.7:4444"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-allowed source: want 403, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "ok") {
+		t.Fatalf("blocked request leaked a successful body: %s", rec.Body.String())
+	}
+
+	// 回环：正常放行
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "127.0.0.1:4444"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Fatalf("loopback: want 200 ok, got %d %q", rec.Code, rec.Body.String())
+	}
+
+	// 加了 WSL 网段之后：只在名单里的能进
+	nets, err := parseAllowNets([]string{"127.0.0.1/32,172.28.0.0/16"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	allowNets = nets
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "172.28.240.55:4444" // WSL2 侧地址
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("wsl subnet should be allowed, got %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "172.29.0.1:4444"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("neighbouring subnet must stay blocked, got %d", rec.Code)
+	}
+}

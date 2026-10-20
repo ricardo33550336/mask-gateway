@@ -21,22 +21,58 @@ go build -o mask-gateway .          # 单二进制，含前端（改了 static/ 
 ### 1.1 日常（接中转站）
 
 ```bash
-UPSTREAM=https://你的中转站 ./mask-gateway -addr :8282
+UPSTREAM=https://你的中转站 ./mask-gateway
 ```
 
 打开 <http://localhost:8282> 就是管理界面。
+
+默认**只绑回环**（`-addr 127.0.0.1:8282`）并且只接受回环来源的连接。
+要放开给 WSL / 局域网，见 1.3。
 
 ### 1.2 带诊断（推荐灰度期一直开着）
 
 ```bash
 UPSTREAM=https://你的中转站 \
 AUDIT=1 ADMIN_TOKEN='换成一个随机串' \
-./mask-gateway -addr :8282
+./mask-gateway -addr 127.0.0.1:8282
 ```
 
 - `AUDIT=1` 打开诊断事件环形缓冲（**不保存请求/响应内容**）
 - `ADMIN_TOKEN` 是读诊断接口的令牌；**不设的话 `/api/events` 直接 403**（有意的 fail-closed）
 - 管理界面「诊断事件」面板里粘贴同一个 token 才能看事件
+
+### 1.3 让 WSL 里的 agent 连 Windows 侧的网关
+
+两层要同时放开：**监听地址** + **来源白名单**。
+
+```powershell
+# Windows 侧（PowerShell）
+$env:UPSTREAM='https://你的中转站'
+$env:ADMIN_TOKEN='换成一个随机串'
+$env:AUDIT='1'
+.\mask-gateway.exe -addr 0.0.0.0:8282 -allow-cidr 172.16.0.0/12
+
+# 防火墙放行 8282（管理员权限执行一次）
+New-NetFirewallRule -DisplayName "mask-gateway" -Direction Inbound -LocalPort 8282 -Protocol TCP -Action Allow
+```
+
+```bash
+# WSL 侧
+host=$(ip route show default | awk '{print $3}')   # Windows 宿主地址
+curl -s "http://$host:8282/healthz"               # 期望 ok
+export OPENAI_BASE_URL="http://$host:8282/v1"
+```
+
+要点：
+
+- `-allow-cidr` 写 **WSL 的 NAT 网段**（通常是 `172.16.0.0/12` 里的一段；想看准确值就在 WSL 里
+  `ip -4 addr`，把 `eth0` 的地址加上掩码填进去，例如 `172.28.240.0/20`）。不要直接写 `0.0.0.0/0`，
+  那等于把白名单关了。
+- 白名单外的连接一律 **403**，连 `/healthz` 都不给 —— 这是故意的（不给探测留指纹）。
+- Windows 重启后 WSL 的 vEthernet 地址可能变；用网段而不是单个 IP 就不受影响。
+- 只有 Windows ↔ WSL 之间通信的话，流量不出本机；但 `0.0.0.0` 也会让**同一局域网**能连到端口，
+  只是会被白名单挡住。想更紧就用 `-addr 172.28.240.1:8282`（绑 vEthernet 地址），代价是地址变了要跟着改。
+- 若在网关前面挂反向代理（TLS 终止），代理必须与网关**同机**，否则白名单看到的是代理地址。
 
 ### 1.3 上游不认 `developer` 角色时
 

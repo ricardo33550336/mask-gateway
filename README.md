@@ -37,11 +37,11 @@ cd mask-gateway
 go build -o mask-gateway .
 
 # 2. 启动（指向你的上游，比如 OpenAI 或任何 OpenAI 兼容服务）
-UPSTREAM=https://api.openai.com ./mask-gateway -addr :8080
+UPSTREAM=https://api.openai.com ./mask-gateway -addr 127.0.0.1:8282
 # 或: ./mask-gateway -upstream https://api.openai.com
 
 # 3. 打开管理界面
-open http://localhost:8080
+open http://localhost:8282
 ```
 
 想让它直接认识你的密钥（推荐），启动时加一份 `.env`：
@@ -72,7 +72,8 @@ curl http://localhost:8080/v1/chat/completions \
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `-addr` | `:8080` | 监听地址 |
+| `-addr` | `127.0.0.1:8282` | 监听地址。默认只绑回环；需要 WSL / 局域网访问时改 `0.0.0.0:8282`，并**同时**用 `-allow-cidr` 限定来源 |
+| `-allow-cidr` / 环境变量 `ALLOW_CIDR` | `127.0.0.1/32,::1/128` | 允许连进来的来源网段（可重复，或逗号分隔）。白名单外的连接一律 403，**连 `/healthz` 也不给** |
 | `-rules` | `rules.json` | 规则存储文件（自动创建） |
 | `-secret-file` / 环境变量 `SECRET_FILE` | 空 | **pinned** `.env` 路径（可重复）。只读 `###secret` 段内的真实值，命中即脱敏；**显式文件有问题时拒绝启动**（fail closed） |
 | `-secret-list` / 环境变量 `SECRET_LIST` | `secret-files.json` | **可编辑**路径列表：管理界面「已知密钥」里增删，立即生效并持久化。列表条目坏掉只跳过 + 告警（不阻止启动） |
@@ -84,7 +85,7 @@ curl http://localhost:8080/v1/chat/completions \
 | `-leak-min-len` | `8` | 回显检测的最短 needle；更短的值（单词/数字）不参与匹配，避免误报 |
 | `-warn-scan-bytes` | `262144` | 每条响应用于检测器告警扫描的字节预算（`0` = 关闭 B2） |
 | `-audit` / 环境变量 `AUDIT=1` | 关 | 保留诊断事件环形缓冲（**不保存请求/响应内容**） |
-| `-admin-token` / 环境变量 `ADMIN_TOKEN` | 空 | 诊断接口（`GET/DELETE /api/events`、`GET /api/secrets`、`POST /api/secrets/reload`）的 Bearer token。**为空时这些接口直接 403（fail closed）** |
+| `-admin-token` / 环境变量 `ADMIN_TOKEN` | 空 | 诊断接口（`GET/DELETE /api/events`、`/api/secrets*`、`POST /api/preview`）的 Bearer token。**为空时这些接口直接 403（fail closed）** |
 | `-audit-size` | `200` | 环形缓冲条数 |
 | `-audit-hint-chars` | `0` | 事件里保留命中值的前 N 字节（默认 0 = 不保留内容；硬上限 16，且**永不记录完整值**） |
 

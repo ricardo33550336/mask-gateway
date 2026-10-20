@@ -6,10 +6,13 @@ import (
 	"embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -41,7 +44,7 @@ var (
 )
 
 func main() {
-	addr := flag.String("addr", ":8282", "listen address")
+	addr := flag.String("addr", "127.0.0.1:8282", "listen address (loopback by default; use 0.0.0.0:8282 plus -allow-cidr to expose it)")
 	rulesFile := flag.String("rules", "rules.json", "path to the rules JSON file")
 	upstream := flag.String("upstream", os.Getenv("UPSTREAM"), "upstream base URL, e.g. https://api.openai.com")
 	developerAsSystem := flag.Bool("developer-as-system", os.Getenv("DEVELOPER_AS_SYSTEM") == "1",
@@ -68,9 +71,22 @@ func main() {
 		"JSON file holding the editable .env path list (add/remove from the admin UI); entries only skip with a warning")
 	secretReload := flag.Duration("secret-reload", 5*time.Second,
 		"poll interval for secret file/list changes (0 disables polling; SIGHUP and /api/secrets/reload still work)")
+	var allowCidr stringList
+	flag.Var(&allowCidr, "allow-cidr",
+		"CIDR (or single IP) allowed to connect; repeatable, comma separated; default 127.0.0.1/32 + ::1/128")
 	flag.Parse()
 
 	normalizeDeveloperToSystem = *developerAsSystem
+
+	// 来源白名单：默认只有回环。即使有人把 -addr 写成 0.0.0.0 把端口暴露出去，
+	// 非白名单来源仍然拿不到任何响应（/healthz、/api/*、转发一律挡）。
+	// 注意：Go 的 RemoteAddr 是 TCP 对端地址，客户端无法伪造；但若前面挂了反向代理，
+	// 这里看到的就是代理的地址 —— 代理请与网关同机（127.0.0.1）。
+	nets, err := parseAllowNets(append(allowCidr, envAllowCIDR()...))
+	if err != nil {
+		log.Fatalf("allow-cidr: %v", err)
+	}
+	allowNets = nets
 	guardEnabled = *responseGuard
 	peekBytes = *peekLimit
 	leakMinLen = *leakMin
@@ -78,7 +94,6 @@ func main() {
 	audit.configure(*auditEnabled, *auditSize, *auditHint)
 	adminTokenValue = *adminToken
 
-	var err error
 	store, err = NewStore(*rulesFile)
 	if err != nil {
 		log.Fatalf("load rules store: %v", err)
@@ -101,11 +116,107 @@ func main() {
 		},
 	}
 
-	http.HandleFunc("/", route)
+	http.Handle("/", restrictRemote(http.HandlerFunc(route)))
 
-	log.Printf("mask gateway listening on %s (upstream=%q, rules=%s, secrets=%d values, response-guard=%v, peek=%dB, audit=%v)",
-		*addr, upstreamBase, *rulesFile, currentSecretSet().valueCount(), guardEnabled, peekBytes, audit.isEnabled())
+	log.Printf("mask gateway listening on %s (allow=%s, upstream=%q, rules=%s, secrets=%d values, response-guard=%v, peek=%dB, audit=%v)",
+		*addr, allowSummary(), upstreamBase, *rulesFile, currentSecretSet().valueCount(), guardEnabled, peekBytes, audit.isEnabled())
 	log.Fatal(http.ListenAndServe(*addr, nil))
+}
+
+// allowNets 是允许连进来的来源网段（-allow-cidr / ALLOW_CIDR）。
+// 默认只有回环：网关自己也默认绑 127.0.0.1，两层是独立的保险。
+var allowNets []netip.Prefix
+
+func defaultAllowNets() []netip.Prefix {
+	return []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.1/32"),
+		netip.MustParsePrefix("::1/128"),
+	}
+}
+
+// parseAllowNets 解析白名单条目。不带 "/" 的按单主机（/32 或 /128）处理，
+// 空列表 = 默认回环。任何一条写错都返回错误（启动时 fail closed，不静默降级）。
+func parseAllowNets(specs []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(specs))
+	for _, raw := range specs {
+		for _, spec := range strings.Split(raw, ",") {
+			spec = strings.TrimSpace(spec)
+			if spec == "" {
+				continue
+			}
+			if !strings.Contains(spec, "/") {
+				a, err := netip.ParseAddr(spec)
+				if err != nil {
+					return nil, fmt.Errorf("invalid allow-cidr %q: %w", spec, err)
+				}
+				a = a.Unmap()
+				out = append(out, netip.PrefixFrom(a, a.BitLen()))
+				continue
+			}
+			p, err := netip.ParsePrefix(spec)
+			if err != nil {
+				return nil, fmt.Errorf("invalid allow-cidr %q: %w", spec, err)
+			}
+			out = append(out, p.Masked())
+		}
+	}
+	if len(out) == 0 {
+		return defaultAllowNets(), nil
+	}
+	return out, nil
+}
+
+func allowSummary() string {
+	parts := make([]string, 0, len(allowNets))
+	for _, p := range allowNets {
+		parts = append(parts, p.String())
+	}
+	return strings.Join(parts, ",")
+}
+
+// remoteAllowed 判断某个 RemoteAddr 是否在白名单内。
+//
+// 解析不出来的地址一律拒绝 —— "看不懂"不能当成"放行"。
+// RemoteAddr 是 TCP 对端地址，客户端无法伪造；但反向代理会让它变成代理的地址，
+// 所以代理必须与网关同机（127.0.0.1）。
+func remoteAllowed(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	a, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return false
+	}
+	a = a.Unmap()
+	for _, p := range allowNets {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// restrictRemote 是挂在 mux 根上的来源白名单。放在 mux 而不是 route 里，
+// 是为了让"所有入口"（含以后新增的）自动受控，同时测试仍可直接调 route。
+func restrictRemote(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !remoteAllowed(r.RemoteAddr) {
+			// 拒绝也要限流：否则一次端口扫描就能把日志刷满。
+			if ok, suppressed := guardLog.allow("ipdeny"); ok {
+				extra := ""
+				if suppressed > 0 {
+					extra = fmt.Sprintf(" suppressed=%d", suppressed)
+				}
+				log.Printf("access: denied remote=%s path=%s%s", r.RemoteAddr, r.URL.Path, extra)
+			}
+			apiErr(w, http.StatusForbidden,
+				"forbidden: this gateway does not accept connections from "+r.RemoteAddr+
+					" (allowed: "+allowSummary()+"; adjust -allow-cidr)")
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // route dispatches between the admin UI, the admin API and the forwarder.
@@ -668,6 +779,15 @@ func (s *stringList) String() string { return strings.Join(*s, ", ") }
 func (s *stringList) Set(v string) error {
 	*s = append(*s, v)
 	return nil
+}
+
+// envAllowCIDR 让 -allow-cidr 也能从 ALLOW_CIDR 环境变量给（逗号分隔）。
+func envAllowCIDR() []string {
+	raw := strings.TrimSpace(os.Getenv("ALLOW_CIDR"))
+	if raw == "" {
+		return nil
+	}
+	return []string{raw}
 }
 
 // envOr 返回环境变量值，为空时回退到默认值。

@@ -161,8 +161,10 @@ POST /api/preview {"detector":"known_secret","testText":"<候选前缀>"} → ha
 WSL 连 Windows 侧网关这类部署里端口必然不是 loopback-only，因此这条必须 fail closed。
 测试：`TestPreviewIsAdminOnly`。
 
-**建议**：绑定内网地址 + 前置网关做认证。别把 `:8282` 直接暴露到公网。
-只给 WSL/局域网用时，至少保证 `-admin-token` 非空（空 token 会让诊断接口直接 403）。
+**建议**：默认已收窄到“只绑回环 + 只收回环来源”（`-addr 127.0.0.1:8282`、`-allow-cidr`）。
+需要 WSL/局域网访问时把 `-addr` 改成 `0.0.0.0:8282` 并同时指定 `-allow-cidr <具体网段>`，
+**不要**写 `0.0.0.0/0`（那等于把白名单关掉）。白名单外的连接一律 403（含 `/healthz`）。
+即使如此，LAN 上的明文 HTTP 仍没有加密，真要跨信任边界请前置 TLS 终止。
 
 ---
 
@@ -255,6 +257,7 @@ WSL 连 Windows 侧网关这类部署里端口必然不是 loopback-only，因�
 | 覆盖缺口信号 | `TestCoverageGap*`、`TestNoCoverageSignalForNormalValues` |
 | B2 预算与重叠 | `TestWarnScanner*`、`TestScanBudgetExhaustionIsObservableE2E` |
 | 诊断鉴权 | `TestEventsAPI*`、`TestPreviewIsAdminOnly` |
+| 来源白名单（默认回环、写错 fail closed） | `TestRemoteAllowedDefaultsToLoopback`、`TestParseAllowNets`、`TestRestrictRemoteBlocksAndFailsClosed` |
 | 已知值只保护 `###secret` 段 / 显式文件 fail closed | `TestSecretCollectsOnlySecretSection`、`TestSecretExplicitFileFailsClosed`、`TestSecretDirModeSkipsBadFile` |
 | 值不被截断、命中即脱敏且产生 needle | `TestSecretMarkerVariants`、`TestSecretMasksRequestAndFeedsNeedles` |
 | 热重载（保留旧快照 / SIGHUP） | `TestSecretReloadKeepsOldSnapshotOnError`、`TestSecretReloadPicksUpNewValue`、`TestSecretSIGHUPReloads` |

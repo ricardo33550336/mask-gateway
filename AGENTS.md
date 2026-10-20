@@ -171,10 +171,12 @@ gh release create v0.x.0 --generate-notes             # 打 tag 并生成 releas
 
 提交前跑一遍 `gofmt -l . && go vet ./... && go test ./...`（目前没有 CI，靠本地把关）。
 
-启动参数（除原有 `-addr` / `-rules` / `-upstream` / `-developer-as-system`）：
+启动参数（除原有 `-rules` / `-upstream` / `-developer-as-system`）：
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
+| `-addr` | `127.0.0.1:8282` | 监听地址。默认只绑回环；要 WSL/局域网访问用 `0.0.0.0:8282` + `-allow-cidr` |
+| `-allow-cidr` / `ALLOW_CIDR` | `127.0.0.1/32,::1/128` | 来源白名单（可重复 / 逗号分隔 / 单 IP 视为 /32）。名单外一律 403（含 `/healthz`）；写错 → 拒绝启动 |
 | `-response-guard` / `RESPONSE_GUARD=0` | 开 | 关闭后走 `streamPassthrough`（真正的旧路径：不窥探、不缓冲、不检测） |
 | `-peek-bytes` | 1MB | 非流式响应预先缓冲上限；SSE 恒为 1 次 read |
 | `-leak-min-len` | 8 | B1 needle 最短长度 |
@@ -260,6 +262,13 @@ gh release create v0.x.0 --generate-notes             # 打 tag 并生成 releas
     任何把值写进日志/响应的改动都是不可接受的回归。
 23. **虚拟规则由 `activeRules()` 注入并排在最前**：`protectRequest` 不再直接调 `store.EnabledRules()`。
     已知值必须先被脱敏，否则用户的 mask 规则会先把原值改写成别的东西，导致 `known_secret` 认不出来。
+24. **网络边界只在一处：`restrictRemote`**。它包在 mux 根上（`http.Handle("/", restrictRemote(...))`），
+    所以 `route` 新增分支自动受控；**新增监听器/旁路（如第二个 `ListenAndServe`、Unix socket、
+    `httputil.ReverseProxy` 直连）必须同样经它**，否则白名单就形同虚设。
+    默认 `-addr 127.0.0.1:8282` + 白名单 `127.0.0.1/32,::1/128` 是两层独立保险（有人把 addr 改成
+    `0.0.0.0` 也不等于开放）。`RemoteAddr` 不可伪造，但**反向代理会把它变成代理地址** → 代理必须同机。
+    拒绝也走 `guardLog` 限流（key=`ipdeny`），否则一次端口扫描就能刷满日志。
+    `TestRemoteAllowedDefaultsToLoopback` / `TestParseAllowNets` / `TestRestrictRemoteBlocksAndFailsClosed` 锁定。
 
 ## 测试与代码索引
 - 本仓库有 codegraph 索引（`.codegraph/`）。改动代码后先 `codegraph sync` 再查询：

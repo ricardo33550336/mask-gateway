@@ -59,6 +59,7 @@ var detectorRegistry = map[string]detectorFn{
 	"high_entropy":      detectHighEntropy,
 	"ipv4":              detectIPv4,
 	"jwt":               detectJWT,
+	"known_secret":      detectKnownSecret,
 	"private_key":       detectPrivateKey,
 }
 
@@ -82,6 +83,7 @@ var detectorDescriptions = map[string]string{
 	"high_entropy":      "高熵随机串兜底：未知格式的密钥/令牌也能命中（可调阈值与最小长度）",
 	"ipv4":              "IPv4 地址（内网/公网地址会暴露拓扑）",
 	"jwt":               "JWT（三段 base64url，header 含 alg）",
+	"known_secret":      "-secret-file 里 ###secret 段的已知值（网关自动启用，无需手工建规则）",
 	"private_key":       "PEM 私钥块（-----BEGIN ... PRIVATE KEY-----）",
 }
 

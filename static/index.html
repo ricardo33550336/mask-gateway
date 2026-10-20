@@ -19,6 +19,9 @@
   <div class="toolbar">
     <button id="btn-create" class="btn primary">+ 新建规则</button>
     <span id="hint" class="hint"></span>
+    <span class="spacer"></span>
+    <input id="admin-token" type="password" placeholder="ADMIN_TOKEN（-admin-token）" autocomplete="off" class="token-input">
+    <button id="btn-token" class="btn small">保存 token</button>
   </div>
 
   <div class="table-wrap">
@@ -40,13 +43,31 @@
     <p id="empty" class="empty hidden">还没有规则，点击「新建规则」开始。规则按 ID 顺序处理：多个 mask 依次叠加，第一个 reject 立即拦截请求。</p>
   </div>
 
+  <details class="audit secrets" id="secrets-panel">
+    <summary>已知密钥 <span class="muted">— <code>-secret-file</code> 从 <code>.env</code> 的 <code>###secret</code> 段读到的真实值，命中即替换为 <code>[redacted]</code>（只显示路径与键名，永不显示值）</span></summary>
+    <div class="toolbar">
+      <input id="secret-path" placeholder="新路径：.env 文件或项目目录（建议绝对路径）" autocomplete="off" spellcheck="false" class="token-input">
+      <button id="btn-secret-add" class="btn small primary">添加</button>
+      <button id="btn-secrets" class="btn small">刷新</button>
+      <button id="btn-secrets-reload" class="btn small">立即重载</button>
+      <span id="secrets-status" class="muted"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="secrets-table">
+        <thead>
+          <tr><th>文件</th><th>模式</th><th>收进</th><th>键名</th><th>备注</th><th>操作</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p id="secrets-empty" class="empty hidden">还没有任何 .env 路径。在上方输入框里填一个 <code>.env</code> 文件或项目目录就能立即生效（网关不需要重启）。</p>
+  </details>
+
   <details class="audit">
     <summary>诊断事件 <span class="muted">— 响应侧守卫命中记录（需启动时加 <code>-audit</code>）</span></summary>
     <div class="toolbar">
       <button id="btn-events" class="btn small">刷新</button>
       <button id="btn-events-clear" class="btn small danger">清空</button>
-      <input id="audit-token" type="password" placeholder="ADMIN_TOKEN（-admin-token）" autocomplete="off" class="token-input">
-      <button id="btn-token" class="btn small">保存 token</button>
       <span id="audit-status" class="muted"></span>
     </div>
     <ul id="audit-list" class="audit-list"></ul>

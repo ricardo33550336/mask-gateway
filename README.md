@@ -7,6 +7,8 @@
 - **reject**：命中即拦截，直接返回 400
 - **两种规则**：自己写的正则，或内置检测器（带校验位 / 熵验证，见下文）
 - **全量扫描**：`messages` 正文、`tool_calls`、`reasoning_content`、`tools` 函数定义、顶层 `input`/`metadata` 都扫
+- **已知密钥值**：`-secret-file .env` 直接按 `.env` 里 `###secret` 段的**真实值**做精确脱敏 ——
+  不需要描述密钥长什么样（见 [docs/SECRET-FILE.md](docs/SECRET-FILE.md)）
 
 去掉了一切复杂功能：**无统计、无会话保存、无用量计费、无追踪**。接口只做转发，
 响应（含 SSE 流式）原样透传。
@@ -42,6 +44,21 @@ UPSTREAM=https://api.openai.com ./mask-gateway -addr :8080
 open http://localhost:8080
 ```
 
+想让它直接认识你的密钥（推荐），启动时加一份 `.env`：
+
+```bash
+# .env 里用 ###secret 标出敏感段，其余（API_HOST/MODEL 等）不会被脱敏
+./mask-gateway -upstream https://api.openai.com -secret-file ~/.secrets/.env
+```
+
+```dotenv
+API_HOST=api.openai.com
+MODEL=gpt-4o
+
+##########secret
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+```
+
 客户端用法不变：把 base URL 指到网关即可。
 
 ```bash
@@ -57,6 +74,9 @@ curl http://localhost:8080/v1/chat/completions \
 |------|------|------|
 | `-addr` | `:8080` | 监听地址 |
 | `-rules` | `rules.json` | 规则存储文件（自动创建） |
+| `-secret-file` / 环境变量 `SECRET_FILE` | 空 | **pinned** `.env` 路径（可重复）。只读 `###secret` 段内的真实值，命中即脱敏；**显式文件有问题时拒绝启动**（fail closed） |
+| `-secret-list` / 环境变量 `SECRET_LIST` | `secret-files.json` | **可编辑**路径列表：管理界面「已知密钥」里增删，立即生效并持久化。列表条目坏掉只跳过 + 告警（不阻止启动） |
+| `-secret-reload` | `5s` | `-secret-file` 的轮询间隔（`0` = 关闭，仍可用 `kill -HUP` 或 `POST /api/secrets/reload`） |
 | `-upstream` / 环境变量 `UPSTREAM` | 空 | 上游 base URL，如 `https://api.openai.com` |
 | `-developer-as-system` / 环境变量 `DEVELOPER_AS_SYSTEM=1` | 关 | 转发前把 `developer` 角色映射为 `system`（用于不支持 developer 角色的上游） |
 | `-response-guard` / 环境变量 `RESPONSE_GUARD=0` | **开** | 响应侧守卫：阻断真值回显（B1）、敏感内容与模型不一致告警（B2/F）。`RESPONSE_GUARD=0` 关闭 |
@@ -64,7 +84,7 @@ curl http://localhost:8080/v1/chat/completions \
 | `-leak-min-len` | `8` | 回显检测的最短 needle；更短的值（单词/数字）不参与匹配，避免误报 |
 | `-warn-scan-bytes` | `262144` | 每条响应用于检测器告警扫描的字节预算（`0` = 关闭 B2） |
 | `-audit` / 环境变量 `AUDIT=1` | 关 | 保留诊断事件环形缓冲（**不保存请求/响应内容**） |
-| `-admin-token` / 环境变量 `ADMIN_TOKEN` | 空 | 诊断接口（`GET/DELETE /api/events`）的 Bearer token。**为空时该接口直接 403（fail closed）** |
+| `-admin-token` / 环境变量 `ADMIN_TOKEN` | 空 | 诊断接口（`GET/DELETE /api/events`、`GET /api/secrets`、`POST /api/secrets/reload`）的 Bearer token。**为空时这些接口直接 403（fail closed）** |
 | `-audit-size` | `200` | 环形缓冲条数 |
 | `-audit-hint-chars` | `0` | 事件里保留命中值的前 N 字节（默认 0 = 不保留内容；硬上限 16，且**永不记录完整值**） |
 

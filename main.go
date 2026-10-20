@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -59,7 +60,14 @@ func main() {
 	auditHint := flag.Int("audit-hint-chars", 0,
 		"how many leading bytes of a matched value to keep in audit events (0 = none, recommended)")
 	adminToken := flag.String("admin-token", os.Getenv("ADMIN_TOKEN"),
-		"bearer token required by the diagnostics API (/api/events); when empty the API is disabled")
+		"bearer token required by the diagnostics API (/api/events, /api/secrets); when empty the API is disabled")
+	var secretFiles stringList
+	flag.Var(&secretFiles, "secret-file",
+		"path to a .env whose ###secret section holds real secret values (repeatable; pinned: a broken explicit file refuses startup)")
+	secretList := flag.String("secret-list", envOr("SECRET_LIST", defaultSecretListPath),
+		"JSON file holding the editable .env path list (add/remove from the admin UI); entries only skip with a warning")
+	secretReload := flag.Duration("secret-reload", 5*time.Second,
+		"poll interval for secret file/list changes (0 disables polling; SIGHUP and /api/secrets/reload still work)")
 	flag.Parse()
 
 	normalizeDeveloperToSystem = *developerAsSystem
@@ -76,6 +84,12 @@ func main() {
 		log.Fatalf("load rules store: %v", err)
 	}
 
+	// 已知密钥值：pinned（-secret-file）里的显式文件有问题直接拒绝启动（fail closed），
+	// 可编辑列表（-secret-list）里的条目只跳过 + 告警。
+	if err := configureSecrets(append(secretFiles, envSecretFiles()...), *secretList, *secretReload); err != nil {
+		log.Fatalf("secret-file: %v", err)
+	}
+
 	upstreamBase = strings.TrimRight(*upstream, "/")
 
 	client = &http.Client{
@@ -89,8 +103,8 @@ func main() {
 
 	http.HandleFunc("/", route)
 
-	log.Printf("mask gateway listening on %s (upstream=%q, rules=%s, response-guard=%v, peek=%dB, audit=%v)",
-		*addr, upstreamBase, *rulesFile, guardEnabled, peekBytes, audit.isEnabled())
+	log.Printf("mask gateway listening on %s (upstream=%q, rules=%s, secrets=%d values, response-guard=%v, peek=%dB, audit=%v)",
+		*addr, upstreamBase, *rulesFile, currentSecretSet().valueCount(), guardEnabled, peekBytes, audit.isEnabled())
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
@@ -161,7 +175,8 @@ func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	if subtle.ConstantTimeCompare([]byte(got), []byte(adminTokenValue)) != 1 {
-		apiErr(w, http.StatusUnauthorized, "unauthorized")
+		apiErr(w, http.StatusUnauthorized,
+			"unauthorized: 缺少或写错了 admin token —— 在管理页顶部填入 -admin-token/ADMIN_TOKEN 的值并点「保存 token」，curl 则加 X-Admin-Token")
 		return false
 	}
 	return true
@@ -202,6 +217,52 @@ func apiRouter(w http.ResponseWriter, r *http.Request) {
 		}
 		audit.clear()
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+
+	case p == "/secrets" && r.Method == http.MethodGet:
+		// 暴露的是路径与键名（不含值），所以和 /api/events 一样走 fail closed 鉴权。
+		if !requireAdmin(w, r) {
+			return
+		}
+		writeJSON(w, http.StatusOK, currentSecretStatus())
+
+	case p == "/secrets/reload" && r.Method == http.MethodPost:
+		if !requireAdmin(w, r) {
+			return
+		}
+		if currentSecretSet() == nil {
+			apiErr(w, http.StatusConflict, "secret-file is not configured")
+			return
+		}
+		reloadSecrets("api")
+		writeJSON(w, http.StatusOK, currentSecretStatus())
+
+	case p == "/secrets/files" && r.Method == http.MethodPost:
+		// 运行期增删路径：网关开机只启一次，所以列表必须能改。
+		if !requireAdmin(w, r) {
+			return
+		}
+		var in struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			apiErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+			return
+		}
+		if err := addSecretPath(in.Path); err != nil {
+			apiErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, currentSecretStatus())
+
+	case p == "/secrets/files" && r.Method == http.MethodDelete:
+		if !requireAdmin(w, r) {
+			return
+		}
+		if err := removeSecretPath(r.URL.Query().Get("path")); err != nil {
+			apiErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, currentSecretStatus())
 
 	case p == "/preview" && r.Method == http.MethodPost:
 		preview(w, r)
@@ -593,6 +654,41 @@ func guardPeek(peek peekResult, leak *leakMatcher, warn *warnScanner, meta reque
 // Disabled by default to keep pure passthrough.
 var normalizeDeveloperToSystem = false
 
+// stringList 让同一个 flag 可以重复出现（-secret-file a -secret-file b）。
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ", ") }
+
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// envOr 返回环境变量值，为空时回退到默认值。
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+// envSecretFiles 让 -secret-file 也能从 SECRET_FILE 环境变量给（用 OS 路径分隔符
+// 分隔多个），与其它参数的 env 回退保持一致。
+func envSecretFiles() []string {
+	raw := strings.TrimSpace(os.Getenv("SECRET_FILE"))
+	if raw == "" {
+		return nil
+	}
+	parts := filepath.SplitList(raw)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // normalizeDeveloperRoles rewrites role == "developer" to "system" in place.
 // Returns true when anything changed.
 func normalizeDeveloperRoles(doc map[string]json.RawMessage) bool {
@@ -670,7 +766,8 @@ func protectRequest(body []byte) (out []byte, meta requestMeta, rejected bool, e
 	changed := false
 
 	// 1) Masking / reject (rules match the client's ORIGINAL roles).
-	if rules := store.EnabledRules(); len(rules) > 0 {
+	// activeRules 会在这条链的最前面插入 -secret-file 的虚拟规则（已知值优先脱敏）。
+	if rules := activeRules(); len(rules) > 0 {
 		var sink *hitSink
 		if guardEnabled {
 			// Observation only: the collector never affects matching/replacement.

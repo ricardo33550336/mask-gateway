@@ -213,6 +213,24 @@ OpenAI 兼容路径（`/v1/...`）不受影响。
 
 ---
 
+## 16. `-secret-file` 只保护「已知值」
+
+**结论**：从 `.env` 的 `###secret` 段读到什么值，就只保护这些值（见 `docs/SECRET-FILE.md`）。
+
+| 子边界 | 后果 | 依据 / 测试 |
+|---|---|---|
+| **没进路径列表的 `.env`** | 完全不被保护（网关不知道它存在） | 路径由用户在 `-secret-file` / 界面里显式提供，不做自动发现 |
+| **列表里的陈旧路径** | 只跳过 + 告警，不会报错（为了让开机不失败） | `-secret-list` 条目坏掉不影响启动；看 `/api/secrets` 的 `skipped` |
+| **值被编码/拼接后** | 不匹配（`base64("sk-…")`、拆成两行、只贴前半段） | 与第 4 条同源：字节级精确匹配 |
+| **旧值从 `.env` 删除后** | 历史对话里的旧值不再被保护 | 快照即真相；建议轮换时先保留旧值一段时间 |
+| **热加载窗口** | 改完到生效最长 5s（`-secret-reload`），窗口内贴进 prompt 仍会漏 | SIGHUP / `POST /api/secrets/reload` 可立即生效 |
+| **过短的值** | 不按长度过滤，因此可能过度脱敏（正文里偶然出现的 `1234` 也被替换） | 刻意取舍：宁可多脱敏，也不静默漏 |
+| **进程内存** | 值常驻内存，swap / core dump 里可见 | 单用户本地场景可接受 |
+
+**不保证**：能发现「你以为加进去、其实没加」的路径 —— 启动日志与 `/api/secrets` 是唯一的核对手段。
+
+---
+
 ## 附：这些边界由哪些测试锁定
 
 | 边界 | 锁定测试 |
@@ -222,4 +240,8 @@ OpenAI 兼容路径（`/v1/...`）不受影响。
 | 覆盖缺口信号 | `TestCoverageGap*`、`TestNoCoverageSignalForNormalValues` |
 | B2 预算与重叠 | `TestWarnScanner*`、`TestScanBudgetExhaustionIsObservableE2E` |
 | 诊断鉴权 | `TestEventsAPI*` |
+| 已知值只保护 `###secret` 段 / 显式文件 fail closed | `TestSecretCollectsOnlySecretSection`、`TestSecretExplicitFileFailsClosed`、`TestSecretDirModeSkipsBadFile` |
+| 值不被截断、命中即脱敏且产生 needle | `TestSecretMarkerVariants`、`TestSecretMasksRequestAndFeedsNeedles` |
+| 热重载（保留旧快照 / SIGHUP） | `TestSecretReloadKeepsOldSnapshotOnError`、`TestSecretReloadPicksUpNewValue`、`TestSecretSIGHUPReloads` |
+| 已知值接口不回传值 | `TestSecretsAPIIsAdminOnly` |
 | 断流与 holdback | `TestForwardAbortsMidStreamLeak`、`TestHoldback*`、`TestLeakAfterPeekBudgetAbortsInsteadOfBlocking` |

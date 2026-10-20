@@ -9,6 +9,7 @@
 - **mask**：命中规则 → 把请求体中的敏感内容替换为 `replacement`，请求继续转发
 - **reject**：命中规则 → 拦截请求，返回 400
 - **两类规则**：`regex`（regexp2 手写正则）与 `detector`（内置检测器：校验位 / 熵验证）
+- **已知密钥值**（`-secret-file` pinned / `-secret-list` 可编辑）：从 `.env` 的 `###secret` 段读**真实值**做精确脱敏，不靠形状猜测；路径可在管理界面增删；详见 `docs/SECRET-FILE.md`
 
 去掉统计、会话、计费、追踪等一切复杂功能。请求（含 SSE 流式）原样透传到上游，响应方向不做检查。
 
@@ -31,10 +32,11 @@
 | `main.go` | 入口、`route` 分发（管理页 / 管理 API / 转发）、转发逻辑 `forward`、`protectBody`、`developer→system` 归一化、静态资源 `noCache`、HTTP 辅助函数 |
 | `protect.go` | 规则模型 `Rule`/`Action`、JSON 全量扫描（`protectDocument` / `walker`）、正则编译缓存、`protectString` / `applyRuleToString`、校验 `validateRule` |
 | `detect.go` | 内置检测器库（`detectorRegistry`）、校验位（GB 11643 / Luhn）、熵检测、`span` 合并与替换 |
+| `secretfile.go` | `-secret-file`：`.env` 解析（`###secret` 段）、不可变快照 + `atomic.Pointer`、轮询 / SIGHUP / API 热重载、内置虚拟规则与 `known_secret` 检测器、`/api/secrets` 数据结构 |
 | `response.go` | 响应侧守卫：有界窥探 `peekUpstream`、B1 回显检测 `leakMatcher`、B2 告警扫描 `warnScanner`、F 模型比对、E 事件环形缓冲 `auditLog` |
 | `store.go` | `Store`：规则 CRUD + JSON 文件持久化（原子写：临时文件 + rename） |
 | `static/` | 管理界面（`index.html` + `app.js` + `style.css`，原生 JS，调用 `/api/...`）；改动后必须**重新 `go build`** 才生效（`embed` 编进二进制） |
-| `main_test.go` / `response_test.go` | 全部测试（无外部依赖，`go test` 直接跑） |
+| `main_test.go` / `response_test.go` / `hardening_test.go` / `secretfile_test.go` | 全部测试（无外部依赖，`go test` 直接跑） |
 | `rules.json` | 规则存储文件（被 `.gitignore` 忽略，启动时自动创建） |
 
 ## 核心数据模型（`protect.go`）
@@ -69,7 +71,8 @@ forward (main.go)
   ├─ 读请求体（上限 128MB）
   ├─ protectRequest(body) → protected, meta{model, stream, needles}
   │    ├─ 非 JSON → 原样返回（不修改）
-  │    ├─ 规则按 ID 升序处理（store.EnabledRules() 每次请求实时取快照）
+  │    ├─ 规则按 ID 升序处理（activeRules() 每次请求实时取快照：
+  │    │   `-secret-file` 的虚拟规则排在最前面，然后是 store.EnabledRules()）
   │    ├─ protectDocument 依次扫描 messages / tools+functions / 顶层字段
   │    ├─ mask 规则依次叠加；第一个 reject 命中立即拦截
   │    ├─ hitSink 旁路记录"被替换掉的原文" → meta.needles（仅供响应守卫用）
@@ -140,6 +143,10 @@ POST   /api/rules/{id}/status    # 启停 {"enabled": true|false}
 GET    /api/detectors            # 内置检测器清单（含 tunable 标记）
 GET    /api/events?limit=50      # 响应侧守卫事件（未开 -audit 时返回 enabled=false）
 DELETE /api/events               # 清空事件
+GET    /api/secrets              # 已加载的 .env（路径/键名/条数/加载时间，绝不含值；需 admin token）
+POST   /api/secrets/reload       # 立即重载（需 admin token；Windows 无 SIGHUP 时用它）
+POST   /api/secrets/files        # 加入可编辑路径列表（先验证再落盘；需 admin token）
+DELETE /api/secrets/files?path=  # 从列表移除（pinned 条目 400；需 admin token）
 POST   /api/preview              # 试跑规则（正则或检测器，不落盘）
 ```
 
@@ -173,7 +180,10 @@ gh release create v0.x.0 --generate-notes             # 打 tag 并生成 releas
 | `-leak-min-len` | 8 | B1 needle 最短长度 |
 | `-warn-scan-bytes` | 256KB | B2 每条响应的扫描预算（0 = 关闭） |
 | `-audit` / `AUDIT=1` | 关 | 事件环形缓冲（不存内容） |
-| `-admin-token` / `ADMIN_TOKEN` | 空 | 诊断接口 Bearer token；空 = `/api/events` 403（fail closed） |
+| `-admin-token` / `ADMIN_TOKEN` | 空 | 诊断接口 Bearer token；空 = `/api/events` `/api/secrets` 403（fail closed） |
+| `-secret-file` / `SECRET_FILE` | 空 | **pinned** `.env` 路径（可重复）。显式文件坏 → 拒绝启动；目录展开为 `<dir>/.env` 与 `<dir>/*/.env`（只一层，问题只跳过） |
+| `-secret-list` / `SECRET_LIST` | `secret-files.json` | **可编辑**路径列表（界面上增删；条目坏掉只 WARN，不阻止启动） |
+| `-secret-reload` | `5s` | `-secret-file` 轮询间隔；`0` 关闭（SIGHUP / API 仍可用） |
 | `-audit-size` / `-audit-hint-chars` | 200 / 0 | 缓冲条数 / 事件里保留的命中前缀字节 |
 
 ## 改动须知（容易踩的坑）
@@ -230,14 +240,30 @@ gh release create v0.x.0 --generate-notes             # 打 tag 并生成 releas
 17. **前端异步数据不要抢跑**：`detectors` 来自 `GET /api/detectors`，`fillDetectorOptions()` 必须在
     `load()` 拿到数据之后调用（启动时 `detectors` 还是 `[]`，只调一次下拉框就永远是空的）。
     新增依赖接口数据的表单控件照此办理；`TestAppJSRefillsDetectorOptions` 锁定调用次数与顺序。
+18. **`-secret-file` 的标记只认独立整行**：`secretMarker` 用"剥掉行首全部 `#` 再比较"，
+    `###secret` / `#### secret` / `#SECRET` 都算，但 `# secret 的说明` / `###secret: x` 不算。
+    改这个函数等于改用户的 `.env` 契约，必须同步改 `docs/SECRET-FILE.md` 与 `TestSecretMarkerVariants`。
+19. **绝不剥行内 `#` 注释**：真实密钥里就有 `#`（如 `P@vS4^H…Q#`），剥掉 = 值静默变短 =
+    永远匹配不上（比报错更坏）。只处理整行注释、成对引号、`export` 前缀、CRLF/BOM。
+20. **三条失败语义别混**：① `-secret-file` 的**显式文件**坏 → `configureSecrets` 返回错误，
+    主进程 `log.Fatalf`（fail closed）；② `-secret-list` 的条目坏 → 只 `SKIPPED` + 告警照常启动
+    （网关开机只启一次，一条陈旧路径不能让整机起不来）；③ 运行中 `reloadSecretsLocked` 失败 →
+    **保留旧快照**（编辑器保存时的半截文件不能掐断所有 agent）。三条都有测试锁定。
+21. **SIGHUP 必须注册 handler**：未注册时默认行为是**终止进程**，敲一次 `kill -HUP` 等于杀掉
+    网关（`handleSecretSignals` + `TestSecretSIGHUPReloads`）。Windows 上 SIGHUP 不存在，
+    只能靠轮询与 `POST /api/secrets/reload`。
+22. **已知值按"值"去重、日志只到键名**：同一键在不同项目取值不同时两个值都要保护；
+    启动日志、`/api/secrets`、audit 事件一律只出现路径与键名（`secretKeyDiff` 也只比较键名）。
+    任何把值写进日志/响应的改动都是不可接受的回归。
+23. **虚拟规则由 `activeRules()` 注入并排在最前**：`protectRequest` 不再直接调 `store.EnabledRules()`。
+    已知值必须先被脱敏，否则用户的 mask 规则会先把原值改写成别的东西，导致 `known_secret` 认不出来。
 
 ## 测试与代码索引
-
 - 本仓库有 codegraph 索引（`.codegraph/`）。改动代码后先 `codegraph sync` 再查询：
   - `codegraph node <symbol>` — 查看符号源码与调用链
   - `codegraph impact <symbol>` — 改动影响面
   - `codegraph affected main.go protect.go -q` — 改动后需要跑的测试
-- 代码量小（6 个 Go 文件约 2400 行），绝大多数场景直接 `rg`/`read` 即可。
+- 代码量小（7 个 Go 文件约 2900 行），绝大多数场景直接 `rg`/`read` 即可。
 
 ## 性能基线
 
@@ -247,7 +273,8 @@ gh release create v0.x.0 --generate-notes             # 打 tag 并生成 releas
 ## 参考
 
 - 日常运维手册（启动/加规则/看事件/故障速查）：`USAGE.md`。
-- 已知边界（**改代码前先读**，其中几条是有意为之且有测试锁定）：`docs/KNOWN-LIMITS.md`。
+- 已知密钥值（`.env` 已知值脱敏）的契约与运维：`docs/SECRET-FILE.md`。
+- 未知边界（**改代码前先读**，其中几条是有意为之且有测试锁定）：`docs/KNOWN-LIMITS.md`。
 - 未实现项与"为什么没做"：`docs/BACKLOG.md`。
 - 性能基线与容量规划：`docs/PERF-BASELINE.md`。
 - 设计动机、FAQ 详见根目录 `README.md`（中文）。

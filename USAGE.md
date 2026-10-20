@@ -162,6 +162,48 @@ curl -s -XPOST localhost:8282/api/preview -H 'Content-Type: application/json' -d
 # → {"hasMatch":true,"result":"reject"}
 ```
 
+### 3.5 已知密钥值：让网关直接认识你的密钥（推荐）
+
+不用写正则、不用猜形状 —— 把真实值放在 `.env` 的 `###secret` 段里，网关按原值精确替换：
+
+```dotenv
+# 普通配置随便写，不会被脱敏
+API_HOST=api.openai.com
+MODEL=gpt-4o-instruct
+
+##########secret
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+LARK_APP_SECRET=eScTsP12xxxxxxxxxxxxxxxxx
+```
+
+```bash
+# 推荐：开机只启一次，路径全在管理界面里加/删（存到 secret-files.json）
+./mask-gateway -upstream https://api.openai.com -admin-token '$ADMIN_TOKEN'
+
+# 想框死几份（可选）：显式文件坏掉会拒绝启动
+./mask-gateway -upstream https://api.openai.com -secret-file ~/.secrets/.env
+```
+
+管理页 →「已知密钥」：输入 `.env` 文件或项目目录 → **添加**（目录会展开 `<dir>/.env` 与
+`<dir>/*/.env`，只一层），可以逐条**删除**，也可以「立即重载」。加进来的路径立即生效，
+**不需要重启网关**。
+
+启动日志逐份打印**绝对路径 + 键名**（永不打印值）：
+
+```
+secret-file: 2 values from 1 files (loaded 14:32:07)
+  [file] /Users/mac12/.secrets/.env      2 values  OPENAI_API_KEY, LARK_APP_SECRET
+```
+
+- 命中 → 替换成 `[redacted]`，请求继续转发；被替换的原值同时成为响应侧 B1 的 needle
+- 改完 `.env`：**≤5s 自动生效**，或 `kill -HUP $(pgrep mask-gateway)` / 面板「立即重载」
+- 自查：`curl -s -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8282/api/secrets | jq`
+- 管理界面「已知密钥」面板：路径 / 键名 / 条数 / 跳过原因 + 添加 / 删除 / 立即重载（不显示值）
+- **显式列出的文件**没有 `###secret` 标记 / 不可读 → **拒绝启动**（宁可不上线也不裸奔）；
+  目录展开出的文件有问题只跳过 + `SKIPPED` 报告
+
+完整契约（标记语法、引号、`#`、失败语义）见 [docs/SECRET-FILE.md](docs/SECRET-FILE.md)。
+
 ---
 
 ## 4. 日常管理（增删改查 / 启停）
@@ -287,6 +329,11 @@ curl -s localhost:8282/healthz     # → ok
 | 内存涨 | 峰值 ≈ `peek-bytes × 并发大响应数`；高并发下调小 `-peek-bytes` |
 | 日志刷屏 | 已限流；确认不是 `leak`（leak 不限流，出现就该关注） |
 | 改了 `rules.json` 没反应 | 手工改文件需重启；用 API 改才热生效 |
+| 启动即退出，日志说 `no "###secret" marker found` | 显式列出的 `.env` 缺少 `###secret` 段标记；补标记，或把它从 `-secret-file` 里删掉 |
+| 新加的密钥没被脱敏 | 改完 `.env` 最多等 5s，或 `kill -HUP <pid>`；确认 `curl /api/secrets` 的 `values` 增加了 |
+| 某个项目没被保护 | 它的路径没加进「已知密钥」面板，或该 `.env` 缺 `###secret` 标记（面板会显示 `跳过`） |
+| 面板显示「需要 ADMIN_TOKEN」/ 添加时报 `unauthorized` | 顶部输入 `-admin-token` 的值并点「保存 token」（只存 sessionStorage，重开标签页要重新填） |
+| 添加时报 `disabled` | 网关启动时没给 `-admin-token` / `ADMIN_TOKEN`，管理接口整体 403（fail closed） |
 
 ---
 
@@ -353,3 +400,6 @@ go test -run '^$' -bench BenchmarkForward -benchtime 1s ./...   # 吞吐基线
 | `-audit-size` | `200` | 环形条数 |
 | `-audit-hint-chars` | `0` | 事件里保留的命中前缀字节（上限 16，永不记录完整值） |
 | `-admin-token` / `ADMIN_TOKEN` | 空 | 诊断接口令牌；空 = 403 |
+| `-secret-file` / `SECRET_FILE` | 空 | pinned `.env` 路径，可重复；显式文件坏 → 拒绝启动 |
+| `-secret-list` / `SECRET_LIST` | `secret-files.json` | 可编辑路径列表（界面增删，立即生效） |
+| `-secret-reload` | `5s` | `-secret-file` 轮询间隔（`0` = 只用 SIGHUP / API） |

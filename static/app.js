@@ -16,6 +16,15 @@ const esc = (s) =>
 // sessionStorage，关闭标签页即失效；不写 localStorage、不写 cookie。
 const adminToken = () => sessionStorage.getItem("adminToken") || "";
 
+// 401/403 对使用者来说几乎总是“没填 token”或“网关没开管理接口”，直接翻译成可操作的提示。
+const authHint = (msg) => {
+  if (/unauthorized/i.test(msg))
+    return "需要 token：在页面顶部填入 -admin-token / ADMIN_TOKEN 的值，点「保存 token」后再试";
+  if (/disabled/i.test(msg))
+    return "网关未启用管理接口：启动时加 -admin-token（或 ADMIN_TOKEN 环境变量）后重启";
+  return msg;
+};
+
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json" };
   const token = adminToken();
@@ -341,6 +350,106 @@ async function clearEvents() {
   }
 }
 
+/* ---------------- 已知密钥（-secret-file） ---------------- */
+
+// 接口只回路径与键名，绝不回值；token 与诊断事件共用同一个 sessionStorage 键。
+async function loadSecrets() {
+  const status = $("#secrets-status");
+  const tbody = $("#secrets-table tbody");
+  const empty = $("#secrets-empty");
+  let data;
+  try {
+    data = await api("/secrets");
+  } catch (err) {
+    status.textContent = authHint(err.message);
+    return;
+  }
+
+  const files = data.files || [];
+  const list = data.list || [];
+  status.textContent = `${data.values} 个值 · ${files.length} 份文件` +
+    (data.listPath ? ` · 列表 ${data.listPath}` : "");
+  empty.classList.toggle("hidden", files.length > 0 || list.length > 0);
+
+  // 可删除的只看"列表里的路径"：pinned（-secret-file）删了下次开机又回来，只能看。
+  tbody.innerHTML = files
+    .map((f) => {
+      const removable = !f.pinned && list.some((p) => f.path === p || f.path.startsWith(p.replace(/\/$/, "") + "/"));
+      const note = f.skipped
+        ? `<span class="badge reject">跳过</span> ${esc(f.skipped)}`
+        : '<span class="badge mask">生效</span>';
+      const tag = f.pinned
+        ? '<span class="badge detector" title="来自 -secret-file，不能在界面上删除">pinned</span>'
+        : `<span class="badge detector">${esc(f.mode)}</span>`;
+      return `<tr>
+        <td><code>${esc(f.path)}</code></td>
+        <td>${tag}</td>
+        <td>${f.collected}</td>
+        <td>${(f.keys || []).map((k) => `<code>${esc(k)}</code>`).join(" ") || '<span class="muted">—</span>'}</td>
+        <td>${note}</td>
+        <td class="row-actions">${
+          removable
+            ? `<button class="btn small danger" data-del="${esc(
+                list.find((p) => f.path === p || f.path.startsWith(p.replace(/\/$/, "") + "/")) || ""
+              )}">删除</button>`
+            : '<span class="muted">—</span>'
+        }</td>
+      </tr>`;
+    })
+    .join("");
+
+  // 列表里有、但没扫出文件的路径（比如目录下没有 .env）也要露出来，否则“我明明加了”无从排查。
+  const extra = list.filter((p) => !files.some((f) => f.path === p || f.path.startsWith(p.replace(/\/$/, "") + "/")));
+  tbody.innerHTML += extra
+    .map((p) => `<tr>
+      <td><code>${esc(p)}</code></td>
+      <td><span class="badge detector">list</span></td>
+      <td>0</td>
+      <td><span class="muted">—</span></td>
+      <td><span class="badge reject">空</span> 没有找到带 ###secret 的 .env</td>
+      <td class="row-actions"><button class="btn small danger" data-del="${esc(p)}">删除</button></td>
+    </tr>`)
+    .join("");
+}
+
+async function addSecretPath() {
+  const input = $("#secret-path");
+  const path = input.value.trim();
+  if (!path) {
+    hint("先填一个 .env 或项目目录路径", false);
+    return;
+  }
+  try {
+    const data = await api("/secrets/files", { method: "POST", body: JSON.stringify({ path }) });
+    input.value = "";
+    await loadSecrets();
+    hint(`已添加，当前 ${data.values} 个值`);
+  } catch (err) {
+    hint(authHint(err.message), false);
+    if (/unauthorized|disabled/i.test(err.message)) $("#admin-token").focus();
+  }
+}
+
+async function removeSecretPath(path) {
+  try {
+    const data = await api("/secrets/files?path=" + encodeURIComponent(path), { method: "DELETE" });
+    await loadSecrets();
+    hint(`已移除，当前 ${data.values} 个值`);
+  } catch (err) {
+    hint(authHint(err.message), false);
+  }
+}
+
+async function reloadSecrets() {
+  try {
+    const data = await api("/secrets/reload", { method: "POST" });
+    await loadSecrets();
+    hint(`已重载：${data.values} 个值`);
+  } catch (err) {
+    hint(authHint(err.message), false);
+  }
+}
+
 /* ---------------- 事件绑定 ---------------- */
 
 $("#btn-create").addEventListener("click", () => openForm(null));
@@ -396,11 +505,27 @@ $("#rules-table").addEventListener("change", async (e) => {
   }
 });
 
-$("#audit-token").value = adminToken();
+$("#admin-token").value = adminToken();
 $("#btn-token").addEventListener("click", async () => {
-  sessionStorage.setItem("adminToken", $("#audit-token").value.trim());
+  sessionStorage.setItem("adminToken", $("#admin-token").value.trim());
   hint("token 已保存（仅本次会话）");
-  await loadEvents();
+  await Promise.all([loadEvents(), loadSecrets()]);
+});
+$("#btn-secrets").addEventListener("click", loadSecrets);
+$("#btn-secret-add").addEventListener("click", addSecretPath);
+$("#secret-path").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    addSecretPath();
+  }
+});
+$("#secrets-table").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-del]");
+  if (btn) removeSecretPath(btn.dataset.del);
+});
+$("#btn-secrets-reload").addEventListener("click", reloadSecrets);
+$("#secrets-panel").addEventListener("toggle", (e) => {
+  if (e.target.open) loadSecrets();
 });
 $("#btn-events").addEventListener("click", loadEvents);
 $("#btn-events-clear").addEventListener("click", clearEvents);

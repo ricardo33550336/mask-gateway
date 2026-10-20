@@ -1,3 +1,9 @@
 mask-gateway
 rules.json
 rules.json.tmp
+.pi/
+.DS_Store
+.env
+.env.*
+secret-files.json
+secret-files.json.tmp

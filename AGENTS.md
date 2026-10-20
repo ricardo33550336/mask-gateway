@@ -147,7 +147,7 @@ GET    /api/secrets              # 已加载的 .env（路径/键名/条数/加�
 POST   /api/secrets/reload       # 立即重载（需 admin token；Windows 无 SIGHUP 时用它）
 POST   /api/secrets/files        # 加入可编辑路径列表（先验证再落盘；需 admin token）
 DELETE /api/secrets/files?path=  # 从列表移除（pinned 条目 400；需 admin token）
-POST   /api/preview              # 试跑规则（正则或检测器，不落盘）
+POST   /api/preview              # 试跑规则（正则或检测器，不落盘；需 admin token）
 ```
 
 错误格式统一 `{"error": "..."}`（管理 API）或 OpenAI 风格 `{"error":{"message","type"}}`（转发路径）。
@@ -212,6 +212,9 @@ gh release create v0.x.0 --generate-notes             # 打 tag 并生成 releas
    `suppressed=N`。审计环形缓冲不受限流影响（这是"事件不丢"的保证）。
 8. **诊断接口鉴权**：`requireAdmin` 唯一入口，空 token = 403（fail closed），比较用
    `subtle.ConstantTimeCompare`。新增诊断类接口必须走它。
+   **`/api/preview` 也算**（`known_secret` 是子串匹配，免鉴权的试跑等于一个
+   "这段子串是不是已知密钥"的 oracle，可以逐字符把值问出来，不需要读 `.env`）；
+   `TestPreviewIsAdminOnly` 锁定。
 9. **holdback 不变量**：`leakGuardWriter` 每次都在 `pending + chunk` 窗口上检查后才 `release(window[:len-keep])`。
    任何 needle 的前缀都必须留在 `pending` 里，直到包含它的窗口被检查。`finish()`（EOF **和**读错误都要调用）
    会再检测一次再释放；漏调 `finish()` 会丢尾部字节，跳过检测则等于绕过 B1。

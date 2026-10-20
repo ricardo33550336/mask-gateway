@@ -265,6 +265,12 @@ func apiRouter(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, currentSecretStatus())
 
 	case p == "/preview" && r.Method == http.MethodPost:
+		// 试跑**也**要鉴权：known_secret 检测器是子串匹配，免鉴权的 /api/preview
+		// 等于一个"这段子串是不是已知密钥"的 oracle —— 可以逐字符把密钥问出来，
+		// 根本不需要读 .env。任何能连上网关端口的人都能做，所以必须 fail closed。
+		if !requireAdmin(w, r) {
+			return
+		}
 		preview(w, r)
 
 	default:

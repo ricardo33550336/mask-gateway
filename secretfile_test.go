@@ -572,3 +572,63 @@ func TestSecretFilesAPIManagesList(t *testing.T) {
 		t.Fatalf("without a token: want 401, got %d", rec.Code)
 	}
 }
+
+// /api/preview 必须走 requireAdmin。
+//
+// 理由不是"接口不落盘所以无害"：known_secret 检测器对快照里的值做**子串匹配**，
+// 所以免鉴权的试跑等于一个 membership oracle ——
+//
+//	POST /api/preview {"detector":"known_secret","testText":"<候选前缀>"} → hasMatch
+//
+// 逐个字符试就能把已知密钥值问出来（16 位随机值也只要 ~1000 次请求），
+// 完全不需要读 .env，只需要能连上网关端口。WSL 连 Windows 侧网关的部署里，
+// 端口必然不是 loopback-only，这条更必须 fail closed。
+func TestPreviewIsAdminOnly(t *testing.T) {
+	path := writeEnvFile(t, filepath.Join(t.TempDir(), ".env"),
+		"###secret\nA_TOKEN=aaaaaaaaaaaaaaaa1\n")
+	installSecrets(t, path)
+
+	old := adminTokenValue
+	adminTokenValue = "t0ken"
+	defer func() { adminTokenValue = old }()
+
+	// 候选前缀直接用真值：能命中就说明"脱敏逻辑正常"，但前提是必须先过鉴权。
+	body := `{"type":"detector","detector":"known_secret","action":"mask",` +
+		`"replacement":"[redacted]","testText":"x aaaaaaaaaaaaaaaa1 y"}`
+
+	// 1) 没带 token：不能当 oracle 用，且响应里不能出现判定结果
+	rec := previewRequest(body, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("without a token: want 401, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "hasMatch") {
+		t.Fatalf("preview must not answer without a token, got %s", rec.Body.String())
+	}
+
+	// 2) 没配 token（空）= fail closed，不能因为"没配"就放开
+	adminTokenValue = ""
+	if rec := previewRequest(body, ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("no admin token configured: want 403, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	adminTokenValue = "t0ken"
+
+	// 3) 带对 token：正常试跑（这条同时说明 oracle 仍然存在，只是被锁在 token 后面）
+	rec = previewRequest(body, "t0ken")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("with a token: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"hasMatch":true`) {
+		t.Fatalf("expected a match, got %s", rec.Body.String())
+	}
+}
+
+// previewRequest 直接打 route（管理 API 都走这里），token 为空就不带头。
+func previewRequest(body, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/preview", strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("X-Admin-Token", token)
+	}
+	rec := httptest.NewRecorder()
+	route(rec, req)
+	return rec
+}

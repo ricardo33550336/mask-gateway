@@ -286,7 +286,9 @@ async function runTest() {
       $("#t-result-body").textContent = res.result;
     }
   } catch (err) {
-    hint(err.message, false);
+    // 试跑接口需要 admin token（known_secret 是子串匹配，免鉴权就会变成密钥 oracle），
+    // 没带 token 时要把"去填 token"这个指引给出来，而不是只抛 401。
+    hint(authHint(err.message), false);
   }
 }
 

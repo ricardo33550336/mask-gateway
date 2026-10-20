@@ -144,18 +144,24 @@ curl -s -XPOST localhost:8282/api/rules \
 }'
 ```
 
-### 3.4 保存前先试跑（不落盘）
+### 3.4 保存前先试跑（不落盘，需 admin token）
+
+> 试跑接口要鉴权：`known_secret` 是子串匹配，免鉴权的试跑等于一个
+> "这段子串是不是已知密钥"的 oracle（可以逐字符把密钥问出来）。
+> 所以 `curl` 必须带 `-H "X-Admin-Token: $ADMIN_TOKEN"`，管理页则在顶部填一次 token。
 
 ```bash
 # 检测器
-curl -s -XPOST localhost:8282/api/preview -H 'Content-Type: application/json' -d '{
+curl -s -XPOST localhost:8282/api/preview -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{
   "type":"detector","detector":"cn_id_card",
   "testText":"身份证 11010519491231002X","action":"mask","replacement":"[ID]"
 }'
 # → {"hasMatch":true,"result":"身份证 [ID]"}
 
 # 正则
-curl -s -XPOST localhost:8282/api/preview -H 'Content-Type: application/json' -d '{
+curl -s -XPOST localhost:8282/api/preview -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{
   "type":"regex","pattern":"INT-[A-Z0-9]{8}",
   "testText":"leak INT-ABCD1234 here","action":"reject"
 }'

@@ -137,17 +137,32 @@ OpenAI 兼容路径（`/v1/...`）不受影响。
 
 ## 10. `/api/rules` 与 UI 没有鉴权
 
-**结论**：只有**诊断接口**（`/api/events`）加了 fail-closed token；规则接口与管理界面仍是开放的。
+**结论**：**诊断类**接口（`/api/events`、`/api/secrets*`、`/api/preview`）已加 fail-closed token；
+**规则接口与管理界面仍然是开放的**。
 
-- 依据：`main.go` 的 `requireAdmin` 只被 `/events` 调用
-- 状态：项目原有定位（"生产需前置网关"），本轮未扩大范围
+- 依据：`main.go` 的 `requireAdmin`（空 token = 403，比较用常量时间）
+- 状态：规则 CRUD 的开放是项目原有定位（"生产需前置网关"），本轮未扩大范围
 
 **影响**：能访问网关端口的人可以：
 - 读取规则（**正则会暴露你在保护什么格式**）
 - 新增一条 `reject` 规则（对使用者造成 DoS）
 - 关掉现有规则（让你在无保护状态下继续用）
+- 通过 `/api/rules/*/status` 静默禁用 `-secret-file` 之外的脱敏规则
+
+**为什么 `/api/preview` 一定要 token**（曾经是开放的）：
+`known_secret` 检测器对快照里的值做**子串匹配**，所以免鉴权的试跑就是一个
+membership oracle：
+
+```bash
+POST /api/preview {"detector":"known_secret","testText":"<候选前缀>"} → hasMatch
+```
+
+逐个字符试即可把已知密钥值问出来（16 位随机值约 ~1000 次请求），**完全不需要读 `.env`**。
+WSL 连 Windows 侧网关这类部署里端口必然不是 loopback-only，因此这条必须 fail closed。
+测试：`TestPreviewIsAdminOnly`。
 
 **建议**：绑定内网地址 + 前置网关做认证。别把 `:8282` 直接暴露到公网。
+只给 WSL/局域网用时，至少保证 `-admin-token` 非空（空 token 会让诊断接口直接 403）。
 
 ---
 
@@ -239,9 +254,9 @@ OpenAI 兼容路径（`/v1/...`）不受影响。
 | guard=false 真正回退 | `TestGuardOffDoesNotPeek`、`TestHoldbackNotAppliedWhenGuardDisabled` |
 | 覆盖缺口信号 | `TestCoverageGap*`、`TestNoCoverageSignalForNormalValues` |
 | B2 预算与重叠 | `TestWarnScanner*`、`TestScanBudgetExhaustionIsObservableE2E` |
-| 诊断鉴权 | `TestEventsAPI*` |
+| 诊断鉴权 | `TestEventsAPI*`、`TestPreviewIsAdminOnly` |
 | 已知值只保护 `###secret` 段 / 显式文件 fail closed | `TestSecretCollectsOnlySecretSection`、`TestSecretExplicitFileFailsClosed`、`TestSecretDirModeSkipsBadFile` |
 | 值不被截断、命中即脱敏且产生 needle | `TestSecretMarkerVariants`、`TestSecretMasksRequestAndFeedsNeedles` |
 | 热重载（保留旧快照 / SIGHUP） | `TestSecretReloadKeepsOldSnapshotOnError`、`TestSecretReloadPicksUpNewValue`、`TestSecretSIGHUPReloads` |
-| 已知值接口不回传值 | `TestSecretsAPIIsAdminOnly` |
+| 已知值接口不回传值 | `TestSecretsAPIIsAdminOnly`、`TestPreviewIsAdminOnly` |
 | 断流与 holdback | `TestForwardAbortsMidStreamLeak`、`TestHoldback*`、`TestLeakAfterPeekBudgetAbortsInsteadOfBlocking` |

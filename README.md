@@ -154,7 +154,7 @@ POST   /api/rules/{id}/status    # 启停 {"enabled": true}
 GET    /api/detectors            # 内置检测器清单
 GET    /api/events?limit=50      # 响应侧守卫事件（需 -audit）
 DELETE /api/events               # 清空事件
-POST   /api/preview              # 试跑规则（正则或检测器，不落盘）
+POST   /api/preview              # 试跑规则（正则或检测器，不落盘；需 admin token）
 ```
 
 规则结构：
